@@ -98,7 +98,7 @@ class LiteDRAMDMAReader(Module, AutoCSR):
 
         self.comb += [
             rdata.connect(fifo.sink, omit={"id", "resp", "dest", "user"}),
-            fifo.source.connect(source, omit={"valid", "ready", "last"}),
+            fifo.source.connect(source, omit={"valid", "ready", "last", "first"}),
             If(res_fifo.source.valid,
                 source.valid.eq(fifo.source.valid),
                 source.last.eq(res_fifo.source.last),
@@ -129,6 +129,19 @@ class LiteDRAMDMAReader(Module, AutoCSR):
         self.comb += length.eq(self._length.storage[shift:])
 
         self.comb += self._offset.status.eq(offset)
+
+        # Set the 'first' flag if offset==0, clear it after first xfer
+        self.sync += [
+            If(self.source.first,
+                If(self.source.valid & self.source.ready, 
+                    self.source.first.eq(0)
+                )
+            ).Else(
+                If(self._offset.status == 0,
+                    self.source.first.eq(1)
+                )
+            )
+        ]
 
         fsm = FSM(reset_state="IDLE")
         fsm = ResetInserter()(fsm)
@@ -251,16 +264,16 @@ class LiteDRAMDMAWriter(Module, AutoCSR):
         self.submodules.fsm = fsm
         self.comb += fsm.reset.eq(~self._enable.storage)
         fsm.act("IDLE",
-            self.sink.ready.eq(1),
+            self.sink.ready.eq(0),
             NextValue(offset, 0),
             NextState("RUN"),
         )
         fsm.act("RUN",
             self._sink.valid.eq(self.sink.valid),
-            self._sink.last.eq(offset == (length - 1)),
+            self._sink.last.eq((offset == (length - 1)) | self.sink.last),
             self._sink.address.eq(base + offset),
             self._sink.data.eq(self.sink.data),
-            self.sink.ready.eq(self._sink.ready),
+            self.sink.ready.eq(self._sink.ready & self._enable.storage & ~self._done.status),
             If(self.sink.valid & self.sink.ready,
                 NextValue(offset, offset + 1),
                 If(self._sink.last,
